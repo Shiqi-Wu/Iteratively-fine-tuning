@@ -35,9 +35,10 @@ def build_image_dataset(args):
         nb_classes = 1000
 
     elif args.dataset == 'cifar100':
-        dataset_train = datasets.CIFAR100(os.path.join(args.data_path, 'cifar100'), transform=transform_train, train=True)
-        dataset_val = datasets.CIFAR100(os.path.join(args.data_path, 'cifar100'), transform=transform_val, train=False)
+        dataset_train = datasets.CIFAR100(os.path.join(args.data_path, 'cifar100'), transform=transform_train, train=True, download=True)
+        dataset_val = datasets.CIFAR100(os.path.join(args.data_path, 'cifar100'), transform=transform_val, train=False, download=True)
         nb_classes = 100
+        
     elif args.dataset == 'flowers102':
         from flowers102 import Flowers102
         dataset_train = Flowers102(os.path.join(args.data_path, 'flowers102'), split='train', transform=transform_train)
