@@ -36,6 +36,7 @@ def get_args_parser():
     parser.add_argument('--batch_size', default=512, type=int,
                         help='Batch size per GPU (effective batch size is batch_size * accum_iter * # gpus')
     parser.add_argument('--epochs', default=100, type=int)
+    parser.add_argument('--steps', default=0, type=int)
     parser.add_argument('--accum_iter', default=1, type=int,
                         help='Accumulate gradient iterations (for increasing the effective batch size under memory constraints)')
 
@@ -111,11 +112,11 @@ def get_args_parser():
                                                                                 '(for Jx provided IN-21K pretrain')
     # AdaptFormer related parameters
     parser.add_argument('--ffn_adapt', default=False, action='store_true', help='whether activate AdaptFormer')
-    parser.add_argument('--ffn_num', default=64, type=int, help='bottleneck middle dimension')
+    parser.add_argument('--ffn_num', nargs='+', default = 64, type=int, help='bottleneck middle dimensions as a list')
     parser.add_argument('--vpt', default=False, action='store_true', help='whether activate VPT')
     parser.add_argument('--vpt_num', default=1, type=int, help='number of VPT prompts')
     parser.add_argument('--fulltune', default=False, action='store_true', help='full finetune model')
-
+    parser.add_argument('--adpnum_option', default = 'multi', choices = ['single', 'multi'])
     return parser
 
 
@@ -193,6 +194,7 @@ def main(args):
         # VPT related
         vpt_on=args.vpt,
         vpt_num=args.vpt_num,
+        adpnum_option = args.adpnum_option,
     )
 
     if args.model.startswith('vit'):
@@ -238,7 +240,7 @@ def main(args):
             p.requires_grad = False if not args.fulltune else True
     for _, p in model.head.named_parameters():
         p.requires_grad = True
-
+    
     model.to(device)
 
     model_without_ddp = model
@@ -281,42 +283,100 @@ def main(args):
     print(f"Start training for {args.epochs} epochs")
     start_time = time.time()
     max_accuracy = 0.0
-    for epoch in range(args.start_epoch, args.epochs):
-        if args.distributed:
-            data_loader_train.sampler.set_epoch(epoch)
-        train_stats = train_one_epoch(
-            model, criterion, data_loader_train,
-            optimizer, device, epoch, loss_scaler,
-            max_norm=None,
-            log_writer=log_writer,
-            args=args
-        )
-        if args.output_dir:
-            misc.save_model(
+    if args.adpnum_option == 'single':
+        for epoch in range(args.start_epoch, args.epochs):
+            if args.distributed:
+                data_loader_train.sampler.set_epoch(epoch)
+            train_stats = train_one_epoch(
+                model, criterion, data_loader_train,
+                optimizer, device, epoch, loss_scaler,
+                max_norm=None,
+                log_writer=log_writer,
+                args=args
+            )
+            if args.output_dir:
+                misc.save_model(
                 args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
                 loss_scaler=loss_scaler, epoch=epoch)
 
-        test_stats = evaluate(data_loader_val, model, device)
-        print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
-        max_accuracy = max(max_accuracy, test_stats["acc1"])
-        print(f'Max accuracy: {max_accuracy:.2f}%')
+            test_stats = evaluate(data_loader_val, model, device)
+            print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
+            max_accuracy = max(max_accuracy, test_stats["acc1"])
+            print(f'Max accuracy: {max_accuracy:.2f}%')
 
-        if log_writer is not None:
-            log_writer.add_scalar('perf/test_acc1', test_stats['acc1'], epoch)
-            log_writer.add_scalar('perf/test_acc5', test_stats['acc5'], epoch)
-            log_writer.add_scalar('perf/test_loss', test_stats['loss'], epoch)
+            if log_writer is not None:
+                log_writer.add_scalar('perf/test_acc1', test_stats['acc1'], epoch)
+                log_writer.add_scalar('perf/test_acc5', test_stats['acc5'], epoch)
+                log_writer.add_scalar('perf/test_loss', test_stats['loss'], epoch)
 
-        log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
+            log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
                         **{f'test_{k}': v for k, v in test_stats.items()},
                         'epoch': epoch,
                         'n_parameters': n_parameters}
 
-        if args.output_dir and misc.is_main_process():
-            if log_writer is not None:
-                log_writer.flush()
-            with open(os.path.join(args.output_dir, "log.txt"), mode="a", encoding="utf-8") as f:
-                f.write(json.dumps(log_stats) + "\n")
+            if args.output_dir and misc.is_main_process():
+                if log_writer is not None:
+                    log_writer.flush()
+                with open(os.path.join(args.output_dir, "log.txt"), mode="a", encoding="utf-8") as f:
+                    f.write(json.dumps(log_stats) + "\n")
+    
+    elif args.adpnum_option == 'multi':
+        for step in range(args.steps):
+            for i in range(len(args.ffn_num)):
+                # freeze all but the head
+                for _, p in model.named_parameters():
+                    p.required_grad = False
 
+                for _, p in model.head.named_parameters():
+                    p.requires_grad = True
+            
+                # set the adapter i trainable
+                for name, p in model.named_parameters():
+                    if name.startswith(f"adapter_{i}"):
+                        p.requires_grad = True
+
+                optimizer = torch.optim.SGD([p for name, p in model.named_parameters() if p.requires_grad], lr=args.lr, weight_decay=args.weight_decay, momentum=0.9)
+                print(optimizer)
+
+                for epoch in range(args.start_epoch, args.epochs):
+                    if args.distributed:
+                        data_loader_train.sampler.set_epoch(epoch)
+                    train_stats = train_one_epoch(
+                        model, criterion, data_loader_train,
+                        optimizer, device, epoch, loss_scaler,
+                        max_norm=None,
+                        log_writer=log_writer,
+                        args=args
+                    )
+                    if args.output_dir:
+                        misc.save_model(
+                        args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
+                        loss_scaler=loss_scaler, epoch=epoch)
+
+                    test_stats = evaluate(data_loader_val, model, device)
+                    print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
+                    max_accuracy = max(max_accuracy, test_stats["acc1"])
+                    print(f'Max accuracy: {max_accuracy:.2f}%')
+
+                    if log_writer is not None:
+                        log_writer.add_scalar('perf/test_acc1', test_stats['acc1'], epoch)
+                        log_writer.add_scalar('perf/test_acc5', test_stats['acc5'], epoch)
+                        log_writer.add_scalar('perf/test_loss', test_stats['loss'], epoch)
+
+                    log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
+                                **{f'test_{k}': v for k, v in test_stats.items()},
+                                'epoch': epoch,
+                                'n_parameters': n_parameters}
+
+                    if args.output_dir and misc.is_main_process():
+                        if log_writer is not None:
+                            log_writer.flush()
+                        with open(os.path.join(args.output_dir, "log.txt"), mode="a", encoding="utf-8") as f:
+                            f.write(json.dumps(log_stats) + "\n")
+
+    else:
+        raise ValueError(args.ffn_adapt_num)
+    
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))

@@ -1,3 +1,6 @@
+conda deactivate
+conda remove --name fine-tuning --all
+
 # Create a new conda environment named "myenv"
 conda create --name fine-tuning python=3.8 -y
 

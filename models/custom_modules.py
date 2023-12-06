@@ -67,26 +67,57 @@ class Block(nn.Module):
         self.mlp_drop = nn.Dropout(drop)
 
         if config.ffn_adapt:
-            self.adaptmlp = Adapter(self.config, dropout=0.1, bottleneck=config.ffn_num,
+            if self.config.adpnum_option == 'multi':
+                self.adaptmlp = []
+                for ffn_num in config.ffn_num:
+                    self.adaptmlp.append(Adapter(self.config, dropout=0.1, bottleneck=ffn_num,
                                     init_option=config.ffn_adapter_init_option,
                                     adapter_scalar=config.ffn_adapter_scalar,
                                     adapter_layernorm_option=config.ffn_adapter_layernorm_option,
-                                    )
+                                    ))
+                # name the parameters
+                for i, adapter in enumerate(self.adaptmlp):
+                    for param in adapter.parameters():
+                        param.name = f"adapter_{i}_{param.shape}"
+            
+            elif self.config.adpnum_option == 'single':
+                self.adaptmlp = Adapter(self.config, dropout=0.1, bottleneck=config.ffn_num[0],
+                                    init_option=config.ffn_adapter_init_option,
+                                    adapter_scalar=config.ffn_adapter_scalar,
+                                    adapter_layernorm_option=config.ffn_adapter_layernorm_option,
+                                    )        
+            else:
+                raise ValueError(self.config.ffn_adapt_num)    
 
     def forward(self, x):
         x = x + self.drop_path(self.attn(self.norm1(x)))
         if self.config.ffn_adapt and self.config.ffn_option == 'parallel':
-            adapt_x = self.adaptmlp(x, add_residual=False)
+            if self.config.adpnum_option == 'multi':
+                adapt_x = []
+                for adaptmlp in self.adaptmlp:
+                    adapt_x.attend(adaptmlp(x, add_residual = False))                
+            elif self.config.adpnum_option == 'single':
+                adapt_x = self.adaptmlp(x, add_residual=False)
+            else:
+                raise ValueError(self.config.ffn_adapt_num)
+
 
         residual = x
         x = self.mlp_drop(self.act(self.fc1(self.norm2(x))))
         x = self.drop_path(self.mlp_drop(self.fc2(x)))
 
         if self.config.ffn_adapt:
-            if self.config.ffn_option == 'sequential':
-                x = self.adaptmlp(x)
-            elif self.config.ffn_option == 'parallel':
-                x = x + adapt_x
+            # if self.config.ffn_option == 'sequential':
+                # x = self.adaptmlp(x)
+            # Only consider the paralled type
+            if self.config.ffn_option == 'parallel':
+                if self.config.adpnum_option == 'multi':
+                    for adapt_value in adapt_x:
+                        x = x + adapt_value
+                elif self.config.adpnum_option == 'single':
+                    x = x + adapt_x
+                else:
+                    raise ValueError(self.config.ffn_adapt_num)
             else:
                 raise ValueError(self.config.ffn_adapt)
 
