@@ -119,6 +119,12 @@ def get_args_parser():
     parser.add_argument('--adpnum_option', default = 'multi', choices = ['single', 'multi'])
     return parser
 
+def set_trainable_adapter(model, idx):
+    for block in model.blocks:
+        for name, p in block.adaptmlp[idx].named_parameters():
+            p.requires_grad = True
+            print(f"Parameter: {name}, Device: {p.device}")
+    return
 
 def main(args):
     if args.log_dir is None:
@@ -241,7 +247,9 @@ def main(args):
     for _, p in model.head.named_parameters():
         p.requires_grad = True
     
+
     model.to(device)
+    print(device)
 
     model_without_ddp = model
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -260,10 +268,12 @@ def main(args):
     print("accumulate grad iterations: %d" % args.accum_iter)
     print("effective batch size: %d" % eff_batch_size)
 
+    # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
     if args.distributed:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
         model_without_ddp = model.module
-
+    
     # optimizer = LARS([p for name, p in model.named_parameters() if p.requires_grad], lr=args.lr, weight_decay=args.weight_decay)
     optimizer = torch.optim.SGD([p for name, p in model.named_parameters() if p.requires_grad], lr=args.lr, weight_decay=args.weight_decay, momentum=0.9)
     print(optimizer)
@@ -329,11 +339,11 @@ def main(args):
 
                 for _, p in model.head.named_parameters():
                     p.requires_grad = True
-            
+
+                model.to(device)
+
                 # set the adapter i trainable
-                for name, p in model.named_parameters():
-                    if name.startswith(f"adapter_{i}"):
-                        p.requires_grad = True
+                set_trainable_adapter(model, i)
 
                 optimizer = torch.optim.SGD([p for name, p in model.named_parameters() if p.requires_grad], lr=args.lr, weight_decay=args.weight_decay, momentum=0.9)
                 print(optimizer)
@@ -348,11 +358,7 @@ def main(args):
                         log_writer=log_writer,
                         args=args
                     )
-                    if args.output_dir:
-                        misc.save_model(
-                        args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
-                        loss_scaler=loss_scaler, epoch=epoch)
-
+                    
                     test_stats = evaluate(data_loader_val, model, device)
                     print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
                     max_accuracy = max(max_accuracy, test_stats["acc1"])
@@ -373,6 +379,10 @@ def main(args):
                             log_writer.flush()
                         with open(os.path.join(args.output_dir, "log.txt"), mode="a", encoding="utf-8") as f:
                             f.write(json.dumps(log_stats) + "\n")
+                if args.output_dir:
+                        misc.save_model(
+                        args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
+                        loss_scaler=loss_scaler, epoch=step * len(args.ffn_num) + i)
 
     else:
         raise ValueError(args.ffn_adapt_num)

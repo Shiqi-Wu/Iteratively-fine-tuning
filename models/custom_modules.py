@@ -68,18 +68,14 @@ class Block(nn.Module):
 
         if config.ffn_adapt:
             if self.config.adpnum_option == 'multi':
-                self.adaptmlp = []
-                for ffn_num in config.ffn_num:
-                    self.adaptmlp.append(Adapter(self.config, dropout=0.1, bottleneck=ffn_num,
-                                    init_option=config.ffn_adapter_init_option,
-                                    adapter_scalar=config.ffn_adapter_scalar,
-                                    adapter_layernorm_option=config.ffn_adapter_layernorm_option,
-                                    ))
-                # name the parameters
-                for i, adapter in enumerate(self.adaptmlp):
-                    for param in adapter.parameters():
-                        param.name = f"adapter_{i}_{param.shape}"
-            
+                self.adaptmlp = nn.ModuleList()
+                for i, ffn_num in enumerate(config.ffn_num):
+                    adapter = Adapter(self.config, dropout=0.1, bottleneck=ffn_num,
+                                  init_option=config.ffn_adapter_init_option,
+                                  adapter_scalar=config.ffn_adapter_scalar,
+                                  adapter_layernorm_option=config.ffn_adapter_layernorm_option)
+                    self.adaptmlp.append(adapter)
+
             elif self.config.adpnum_option == 'single':
                 self.adaptmlp = Adapter(self.config, dropout=0.1, bottleneck=config.ffn_num[0],
                                     init_option=config.ffn_adapter_init_option,
@@ -95,7 +91,7 @@ class Block(nn.Module):
             if self.config.adpnum_option == 'multi':
                 adapt_x = []
                 for adaptmlp in self.adaptmlp:
-                    adapt_x.attend(adaptmlp(x, add_residual = False))                
+                    adapt_x.append(adaptmlp(x, add_residual = False))                
             elif self.config.adpnum_option == 'single':
                 adapt_x = self.adaptmlp(x, add_residual=False)
             else:
