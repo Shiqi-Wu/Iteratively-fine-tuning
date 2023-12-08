@@ -17,7 +17,6 @@ import torch
 import torch.backends.cudnn as cudnn
 from torch.utils.tensorboard import SummaryWriter
 
-
 import timm
 # assert timm.__version__ == "0.3.2" # version check
 from timm.models.layers import trunc_normal_
@@ -30,6 +29,8 @@ from datasets.image_datasets import build_image_dataset
 from engine_finetune import train_one_epoch, evaluate
 import models.vit_image as vit_image
 
+import psutil
+import os
 
 def get_args_parser():
     parser = argparse.ArgumentParser('AdaptFormer fine-tuning for action recognition for image classification', add_help=False)
@@ -329,7 +330,14 @@ def main(args):
                     log_writer.flush()
                 with open(os.path.join(args.output_dir, "log.txt"), mode="a", encoding="utf-8") as f:
                     f.write(json.dumps(log_stats) + "\n")
-    
+            
+            process = psutil.Process(os.getpid())
+            memory_info = process.memory_info()
+            memory_usage_str = f"Memory Usage: {memory_info.rss / (1024 * 1024)} MB"
+
+            with open(os.path.join(args.output_dir, "log.txt"), mode="a", encoding="utf-8") as f:
+                f.write(memory_usage_str + "\n")
+
     elif args.adpnum_option == 'multi':
         for step in range(args.steps):
             for i in range(len(args.ffn_num)):
@@ -379,6 +387,13 @@ def main(args):
                             log_writer.flush()
                         with open(os.path.join(args.output_dir, "log.txt"), mode="a", encoding="utf-8") as f:
                             f.write(json.dumps(log_stats) + "\n")
+                    process = psutil.Process(os.getpid())
+                    memory_info = process.memory_info()
+                    memory_usage_str = f"Memory Usage: {memory_info.rss / (1024 * 1024)} MB"
+
+                    with open(os.path.join(args.output_dir, "log.txt"), mode="a", encoding="utf-8") as f:
+                        f.write(memory_usage_str + "\n")
+
                 if args.output_dir:
                         misc.save_model(
                         args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
@@ -390,11 +405,17 @@ def main(args):
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))
+    if args.output_dir and misc.is_main_process():
+        if log_writer is not None:
+            log_writer.flush()
+            with open(os.path.join(args.output_dir, "log.txt"), mode="a", encoding="utf-8") as f:
+                f.write("Training time is.{}".format(total_time_str) + "\n")
 
 
 if __name__ == '__main__':
     args = get_args_parser()
     args = args.parse_args()
+    
     if args.output_dir:
         Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     main(args)
