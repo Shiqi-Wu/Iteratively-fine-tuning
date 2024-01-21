@@ -67,7 +67,7 @@ class Adapter(nn.Module):
 
         # Project input 'x' down to the bottleneck size.
         down = self.down_proj(x)
-        # down = self.non_linear_func(down)  # Apply non-linear function (ReLU).
+        down = self.non_linear_func(down)  # Apply non-linear function (ReLU).
         # Apply dropout to the down-projected input.
         down = nn.functional.dropout(down, p=self.dropout, training=self.training)
         # Project thçe input back up from the bottleneck size.

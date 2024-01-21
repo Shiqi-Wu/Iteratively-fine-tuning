@@ -19,10 +19,11 @@ class VisionTransformer(nn.Module):
     def __init__(self, global_pool=False, img_size=224, patch_size=16, in_chans=3, num_classes=1000, embed_dim=768, depth=12,
                  num_heads=12, mlp_ratio=4., qkv_bias=True, representation_size=None, distilled=False,
                  drop_rate=0., attn_drop_rate=0., drop_path_rate=0., embed_layer=PatchEmbed, norm_layer=None,
-                 act_layer=None, weight_init='', tuning_config=None):
+                 act_layer=None, weight_init='', tuning_config=None, hooks=False):
         super().__init__()
         self.tuning_config = tuning_config
         self.num_classes = num_classes
+        self.hooks = hooks
         self.num_features = self.embed_dim = embed_dim  # num_features for consistency with other models
         self.num_tokens = 2 if distilled else 1
         norm_layer = norm_layer or partial(nn.LayerNorm, eps=1e-6)
@@ -127,7 +128,7 @@ class VisionTransformer(nn.Module):
 
         return outcome
 
-    def forward(self, x):
+    def forward_without_hooks(self, x):
         x = self.forward_features(x,)
         if self.head_dist is not None:
             x, x_dist = self.head(x[0]), self.head_dist(x[1])  # x must be a tuple
@@ -139,6 +140,56 @@ class VisionTransformer(nn.Module):
         else:
             x = self.head(x)
         return x
+
+    def forward_with_hooks(self, x):
+        outputs = {}
+
+        B = x.shape[0]
+        x = self.patch_embed(x)
+        outputs['patch_embed'] = x
+
+        cls_tokens = self.cls_token.expand(B, -1, -1)
+        x = torch.cat((cls_tokens, x), dim=1)
+        x = x + self.pos_embed
+        x = self.pos_drop(x)
+        outputs['pos_embed'] = x
+
+        for idx, blk in enumerate(self.blocks):
+            if self.tuning_config.vpt_on:
+                eee = self.embeddings[idx].expand(B, -1, -1)
+                x = torch.cat([eee, x], dim = 1)
+            x = blk(x)
+            outputs[f'block_{idx}'] = x
+            if self.tuning_config.vpt_on:
+                x = x[:, self.tuning_config.vpt_num:, :]
+        
+        if self.global_pool:
+            x = x[:, 1:, :].mean(dim=1) # global pool without cls token
+            x = self.fc_norm(x)
+            outputs['global_pool'] = x
+        else:
+            x = self.norm(x)
+            outcome = x[:, 0]
+            outputs['norm'] = outcome
+
+        x = self.head(outcome)
+        outputs['head'] = x
+
+        if self.head_dist is not None:
+            x_dist = self.head_dist(outcome)
+            outputs['head_dist'] = x_dist
+            if self.training and not torch.jit.is_scripting():
+                return outputs, x, x_dist
+            else:
+                return outputs, (x + x_dist)/2
+        else:
+            return outputs, x
+        
+    def forward(self, x):
+        if self.hooks:
+            return self.forward_with_hooks(x)
+        else:
+            return self.forward_without_hooks(x)
 
 
 def vit_base_patch16(**kwargs):

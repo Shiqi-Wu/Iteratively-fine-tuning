@@ -24,32 +24,42 @@ class Attention(nn.Module):
         return tensor.view(bsz, seq_len, self.num_heads, self.head_dim).transpose(1, 2).contiguous()
 
     def forward(self, x):
-        B, N, C = x.shape
+        # This code implements the forward propagation process of the multi-head self-attention mechanism.
+        
+        # Obtain the shape of the input tensor x, where B is the batch size, N is the sequence length, and C is the feature dimension.
+        B, N, C = x.shape 
 
+        #Apply linear transformation to the input tensor x through the query (Query) projection layer
         q = self.q_proj(x)
+
+        # Apply linear transformation to the input tensor x through the key (Key) projection layer self.k_proj, and then use the self._shape function to adjust the tensor shape to (B * num_heads, N, head_dim), where num_heads is the number of heads in the multi-head self-attention mechanism, and head_dim is the feature dimension of each head.
         k = self._shape(self.k_proj(x), -1, B).view(B * self.num_heads, -1, self.head_dim)
         v = self._shape(self.v_proj(x), -1, B).view(B * self.num_heads, -1, self.head_dim)
         q = self._shape(q, N, B).view(B * self.num_heads, -1, self.head_dim)
 
+        # Calculate the attention weights: 
         # attn = (q @ k.transpose(-2, -1)) * self.scale
         attn_weights = torch.bmm(q, k.transpose(1, 2)) * self.scale
-
+        # Perform softmax normalization on the attention weights to ensure that the sum of the weights is 1.
         attn_weights = nn.functional.softmax(attn_weights, dim=-1)
+        
         attn_probs = self.attn_drop(attn_weights)
         attn_output = torch.bmm(attn_probs, v)
-
+        
+        # Adjust the shape of the attention output tensor to (B, num_heads, N, head_dim)
         attn_output = attn_output.view(B, self.num_heads, N, self.head_dim)
         attn_output = attn_output.transpose(1, 2)
         attn_output = attn_output.reshape(B, N, C)
 
+        # x = W*a
         x = self.proj(attn_output)
+        # drop out
         x = self.proj_drop(x)
 
         return x
 
 
 class Block(nn.Module):
-
     def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False, drop=0., attn_drop=0.,
                  drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm, config=None, layer_id=None):
         super().__init__()
