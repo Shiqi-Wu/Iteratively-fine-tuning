@@ -115,9 +115,6 @@ def train_one_epoch_stepwise(model: torch.nn.Module, criterion: torch.nn.Module,
     if log_writer is not None:
         print('log_dir: {}'.format(log_writer.log_dir))
 
-    if model.hooks == False:
-        raise ValueError("model does not have hooks")
-
     for data_iter_step, batch in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
         samples, targets = batch[0], batch[1]
 
@@ -132,8 +129,17 @@ def train_one_epoch_stepwise(model: torch.nn.Module, criterion: torch.nn.Module,
             samples, targets = mixup_fn(samples, targets)
 
         with torch.cuda.amp.autocast():
-            outputs = model(samples)
-            loss = criterion(outputs, targets)
+            x_0, x_1 = model.forward_with_hooks(samples, block_idx)
+
+            dx_dt = x_1 - x_0
+
+            outputs = model.last_layers(x_1)
+
+            Psi = criterion(outputs, targets)
+
+            dPsi_dt = torch.autograd.grad(outputs=Psi, inputs=x_0, grad_outputs=torch.ones(outputs.size()), only_inputs=True)[0]
+
+            loss = torch.sum(dx_dt * dPsi_dt)
 
         loss_value = loss.item()
 

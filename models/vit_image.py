@@ -141,50 +141,112 @@ class VisionTransformer(nn.Module):
             x = self.head(x)
         return x
 
-    def forward_with_hooks(self, x):
-        outputs = {}
+    # def forward_with_hooks(self, x):
+    #     outputs = {}
+
+    #     B = x.shape[0]
+    #     x = self.patch_embed(x)
+    #     outputs['patch_embed'] = x
+
+    #     cls_tokens = self.cls_token.expand(B, -1, -1)
+    #     x = torch.cat((cls_tokens, x), dim=1)
+    #     x = x + self.pos_embed
+    #     x = self.pos_drop(x)
+    #     outputs['pos_embed'] = x
+
+    #     for idx, blk in enumerate(self.blocks):
+    #         if self.tuning_config.vpt_on:
+    #             eee = self.embeddings[idx].expand(B, -1, -1)
+    #             x = torch.cat([eee, x], dim = 1)
+    #         x = blk(x)
+    #         outputs[f'block_{idx}'] = x
+    #         if self.tuning_config.vpt_on:
+    #             x = x[:, self.tuning_config.vpt_num:, :]
+        
+    #     if self.global_pool:
+    #         x = x[:, 1:, :].mean(dim=1) # global pool without cls token
+    #         x = self.fc_norm(x)
+    #         outputs['global_pool'] = x
+    #     else:
+    #         x = self.norm(x)
+    #         outcome = x[:, 0]
+    #         outputs['norm'] = outcome
+
+    #     x = self.head(outcome)
+    #     outputs['head'] = x
+
+    #     if self.head_dist is not None:
+    #         x_dist = self.head_dist(outcome)
+    #         outputs['head_dist'] = x_dist
+    #         if self.training and not torch.jit.is_scripting():
+    #             return outputs, x, x_dist
+    #         else:
+    #             return outputs, (x + x_dist)/2
+    #     else:
+    #         return outputs, x
+        
+    def forward_with_hooks(self, x, block_idx):
 
         B = x.shape[0]
         x = self.patch_embed(x)
-        outputs['patch_embed'] = x
 
         cls_tokens = self.cls_token.expand(B, -1, -1)
         x = torch.cat((cls_tokens, x), dim=1)
         x = x + self.pos_embed
         x = self.pos_drop(x)
-        outputs['pos_embed'] = x
 
         for idx, blk in enumerate(self.blocks):
+            outcome_0 = x
             if self.tuning_config.vpt_on:
                 eee = self.embeddings[idx].expand(B, -1, -1)
                 x = torch.cat([eee, x], dim = 1)
             x = blk(x)
-            outputs[f'block_{idx}'] = x
             if self.tuning_config.vpt_on:
                 x = x[:, self.tuning_config.vpt_num:, :]
+            outcome_1 = x
+            if idx == block_idx:
+                break
+
+        return outcome_0, outcome_1
         
+        # if self.global_pool:
+        #     x = x[:, 1:, :].mean(dim=1) # global pool without cls token
+        #     x = self.fc_norm(x)
+        # else:
+        #     x = self.norm(x)
+        #     outcome = x[:, 0]
+        #     outputs['norm'] = outcome
+
+        # x = self.head(outcome)
+        # outputs['head'] = x
+
+        # if self.head_dist is not None:
+        #     x_dist = self.head_dist(outcome)
+        #     if self.training and not torch.jit.is_scripting():
+        #         return outputs, x, x_dist
+        #     else:
+        #         return outputs, (x + x_dist)/2
+        # else:
+        #     return outputs, x
+    
+    def last_layers(self, x):
         if self.global_pool:
-            x = x[:, 1:, :].mean(dim=1) # global pool without cls token
+            x = x[:, 1:, :].mean(dim=1)  # global pool without cls token
             x = self.fc_norm(x)
-            outputs['global_pool'] = x
         else:
             x = self.norm(x)
-            outcome = x[:, 0]
-            outputs['norm'] = outcome
-
-        x = self.head(outcome)
-        outputs['head'] = x
-
+            x = x[:, 0]
         if self.head_dist is not None:
-            x_dist = self.head_dist(outcome)
-            outputs['head_dist'] = x_dist
+            x, x_dist = self.head(x[0]), self.head_dist(x[1])  # x must be a tuple
             if self.training and not torch.jit.is_scripting():
-                return outputs, x, x_dist
+                # during inference, return the average of both classifier predictions
+                return x, x_dist
             else:
-                return outputs, (x + x_dist)/2
+                return (x + x_dist) / 2
         else:
-            return outputs, x
-        
+            x = self.head(x)
+        return x
+
     def forward(self, x):
         if self.hooks:
             return self.forward_with_hooks(x)
