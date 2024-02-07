@@ -117,6 +117,7 @@ def train_one_epoch_stepwise(model: torch.nn.Module, criterion: torch.nn.Module,
 
     for data_iter_step, batch in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
         samples, targets = batch[0], batch[1]
+        samples.requires_grad_(True)
 
         # we use a per iteration (instead of per epoch) lr scheduler
         if data_iter_step % accum_iter == 0:
@@ -137,7 +138,7 @@ def train_one_epoch_stepwise(model: torch.nn.Module, criterion: torch.nn.Module,
 
             Psi = criterion(outputs, targets)
 
-            dPsi_dt = torch.autograd.grad(outputs=Psi, inputs=x_0, grad_outputs=torch.ones(outputs.size()), only_inputs=True)[0]
+            dPsi_dt = torch.autograd.grad(outputs=Psi, inputs=x_1, only_inputs=True)[0]
 
             loss = torch.sum(dx_dt * dPsi_dt)
 
@@ -178,7 +179,6 @@ def train_one_epoch_stepwise(model: torch.nn.Module, criterion: torch.nn.Module,
     metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger)
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
-
 
 
 @torch.no_grad()

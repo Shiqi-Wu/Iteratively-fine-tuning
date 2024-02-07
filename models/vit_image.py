@@ -128,7 +128,7 @@ class VisionTransformer(nn.Module):
 
         return outcome
 
-    def forward_without_hooks(self, x):
+    def forward(self, x):
         x = self.forward_features(x,)
         if self.head_dist is not None:
             x, x_dist = self.head(x[0]), self.head_dist(x[1])  # x must be a tuple
@@ -196,18 +196,18 @@ class VisionTransformer(nn.Module):
         x = self.pos_drop(x)
 
         for idx, blk in enumerate(self.blocks):
-            outcome_0 = x
+            x_0 = x
             if self.tuning_config.vpt_on:
                 eee = self.embeddings[idx].expand(B, -1, -1)
                 x = torch.cat([eee, x], dim = 1)
             x = blk(x)
             if self.tuning_config.vpt_on:
                 x = x[:, self.tuning_config.vpt_num:, :]
-            outcome_1 = x
+            x_1 = x
             if idx == block_idx:
                 break
 
-        return outcome_0, outcome_1
+        return x_0, x_1
         
         # if self.global_pool:
         #     x = x[:, 1:, :].mean(dim=1) # global pool without cls token
@@ -246,13 +246,6 @@ class VisionTransformer(nn.Module):
         else:
             x = self.head(x)
         return x
-
-    def forward(self, x):
-        if self.hooks:
-            return self.forward_with_hooks(x)
-        else:
-            return self.forward_without_hooks(x)
-
 
 def vit_base_patch16(**kwargs):
     model = VisionTransformer(

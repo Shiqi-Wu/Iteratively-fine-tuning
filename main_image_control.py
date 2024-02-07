@@ -26,7 +26,7 @@ from util.pos_embed import interpolate_pos_embed_ori as interpolate_pos_embed
 from util.misc import NativeScalerWithGradNormCount as NativeScaler
 
 from datasets.image_datasets import build_image_dataset
-from engine_finetune import train_one_epoch, evaluate
+from engine_finetune import train_one_epoch, evaluate, train_one_epoch_stepwise
 import models.vit_image as vit_image
 
 import psutil
@@ -288,6 +288,7 @@ def main(args):
     print("criterion = %s" % str(criterion))
 
     misc.load_model(args=args, model_without_ddp=model_without_ddp, optimizer=optimizer, loss_scaler=loss_scaler)
+    # What is this line for?
 
     if args.eval:
         test_stats = evaluate(data_loader_val, model, device)
@@ -298,6 +299,10 @@ def main(args):
     start_time = time.time()
     max_accuracy = 0.0
     if args.adpnum_option == 'single':
+        # optimize the params in model.head
+
+        params_to_optimize = [p for p in model.head.parameters() if p.requires_grad]
+
         for epoch in range(args.start_epoch, args.epochs):
             if args.distributed:
                 data_loader_train.sampler.set_epoch(epoch)
@@ -341,67 +346,53 @@ def main(args):
             with open(os.path.join(args.output_dir, "log.txt"), mode="a", encoding="utf-8") as f:
                 f.write(memory_usage_str + "\n")
 
-    elif args.adpnum_option == 'multi':
-        for step in range(args.steps):
-            for i in range(len(args.ffn_num)):
-                # freeze all but the head
-                for _, p in model.named_parameters():
-                    p.required_grad = False
+        for idx, blk in enumerate(model.blocks):
+            params_to_optimize = [p for p in model.blocks[idx].parameters() if p.requires_grad]
 
-                for _, p in model.head.named_parameters():
-                    p.requires_grad = True
+            optimizer = torch.optim.SGD(params_to_optimize, lr=args.lr, weight_decay=args.weight_decay, momentum=0.9)
 
-                model.to(device)
-
-                # set the adapter i trainable
-                set_trainable_adapter(model, i)
-
-                optimizer = torch.optim.SGD([p for name, p in model.named_parameters() if p.requires_grad], lr=args.lr, weight_decay=args.weight_decay, momentum=0.9)
-                print(optimizer)
-
-                for epoch in range(args.start_epoch, args.epochs):
-                    if args.distributed:
-                        data_loader_train.sampler.set_epoch(epoch)
-                    train_stats = train_one_epoch(
-                        model, criterion, data_loader_train,
-                        optimizer, device, epoch, loss_scaler,
-                        max_norm=None,
-                        log_writer=log_writer,
-                        args=args
-                    )
-                    
-                    test_stats = evaluate(data_loader_val, model, device)
-                    print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
-                    max_accuracy = max(max_accuracy, test_stats["acc1"])
-                    print(f'Max accuracy: {max_accuracy:.2f}%')
-
-                    if log_writer is not None:
-                        log_writer.add_scalar('perf/test_acc1', test_stats['acc1'], epoch)
-                        log_writer.add_scalar('perf/test_acc5', test_stats['acc5'], epoch)
-                        log_writer.add_scalar('perf/test_loss', test_stats['loss'], epoch)
-
-                    log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
-                                **{f'test_{k}': v for k, v in test_stats.items()},
-                                'epoch': epoch,
-                                'n_parameters': n_parameters}
-
-                    if args.output_dir and misc.is_main_process():
-                        if log_writer is not None:
-                            log_writer.flush()
-                        with open(os.path.join(args.output_dir, "log.txt"), mode="a", encoding="utf-8") as f:
-                            f.write(json.dumps(log_stats) + "\n")
-                    process = psutil.Process(os.getpid())
-                    memory_info = process.memory_info()
-                    memory_usage_str = f"Memory Usage: {memory_info.rss / (1024 * 1024)} MB"
-
-                    with open(os.path.join(args.output_dir, "log.txt"), mode="a", encoding="utf-8") as f:
-                        f.write(memory_usage_str + "\n")
-
+            for epoch in range(args.start_epoch, args.epochs):
+                if args.distributed:
+                    data_loader_train.sampler.set_epoch(epoch)
+                train_stats = train_one_epoch_stepwise(
+                model, criterion, data_loader_train,
+                optimizer, device, epoch, loss_scaler, block_idx = idx,
+                max_norm=None,
+                log_writer=log_writer,
+                args=args
+            )
                 if args.output_dir:
-                        misc.save_model(
-                        args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
-                        loss_scaler=loss_scaler, epoch=step * len(args.ffn_num) + i)
+                    misc.save_model(
+                    args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
+                    loss_scaler=loss_scaler, epoch=epoch)
 
+                test_stats = evaluate(data_loader_val, model, device)
+                print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
+                max_accuracy = max(max_accuracy, test_stats["acc1"])
+                print(f'Max accuracy: {max_accuracy:.2f}%')
+
+                if log_writer is not None:
+                    log_writer.add_scalar('perf/test_acc1', test_stats['acc1'], epoch)
+                    log_writer.add_scalar('perf/test_acc5', test_stats['acc5'], epoch)
+                    log_writer.add_scalar('perf/test_loss', test_stats['loss'], epoch)
+
+                log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
+                        **{f'test_{k}': v for k, v in test_stats.items()},
+                        'epoch': epoch,
+                        'n_parameters': n_parameters}
+
+                if args.output_dir and misc.is_main_process():
+                    if log_writer is not None:
+                        log_writer.flush()
+                    with open(os.path.join(args.output_dir, "log.txt"), mode="a", encoding="utf-8") as f:
+                        f.write(json.dumps(log_stats) + "\n")
+            
+                process = psutil.Process(os.getpid())
+                memory_info = process.memory_info()
+                memory_usage_str = f"Memory Usage: {memory_info.rss / (1024 * 1024)} MB"
+
+                with open(os.path.join(args.output_dir, "log.txt"), mode="a", encoding="utf-8") as f:
+                    f.write(memory_usage_str + "\n")        
     else:
         raise ValueError(args.ffn_adapt_num)
     
